@@ -104,4 +104,4 @@ torchrun ${DISTRIBUTED_ARGS[@]} examples/hunyuanvideo/pretrain_hunyuanvideo.py \
     ${TRAINING_ARGS[@]} \
     ${MODEL_PARALLEL_ARGS[@]} \
     ${DATA_ARGS[@]}    \
-    ${EVAL_AND_LOGGING_ARGS[@]} > test/test_data/tp${TP}cp${CP}_layer36.log
+    ${EVAL_AND_LOGGING_ARGS[@]}

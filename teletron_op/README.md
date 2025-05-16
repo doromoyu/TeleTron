@@ -2,16 +2,14 @@
 ```
 cd teletron_op && bash install.sh
 ```
-
 # Usage
-Activate fused kernels with environment variables.
-- Enable fused kernels with `export FUSED_KERNELS=1` 
+- Enable cuda fused kernels with `export FUSED_KERNELS=1`
 
-# Detail
+# Operator List
 
-## Fused AdaLayerNorm Function
+## Fused AdaLayerNorm 
 
-Currently only supports the last dimension size of the input tensor to be 3072
+Currently it only supports the last dimension size of the input tensor to be 3072
 ```python
 class AdaLNModelFunction(Function):
     """
@@ -94,7 +92,7 @@ class AdaLNModelFunction(Function):
         return grad_input, grad_scale, grad_shift, None, None
 ```
 
-## Fused RMSNorm Function
+## Fused RMSNorm 
 Currently only supports the last dimension size of the input tensor to be 128
 ```python
 class RMSNormModelFunction(Function):
