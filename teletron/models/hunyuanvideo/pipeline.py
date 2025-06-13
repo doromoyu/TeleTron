@@ -43,16 +43,19 @@ class HunyuanPipeline(nn.Module):
         self.post_process = mpu.is_pipeline_last_stage()
         self.input_tensor = None
         print("Initializing HunyuanPipeline...")
-        self.vae = AutoencoderKLHunyuanVideo()
-        self.vae.requires_grad_(False)
-        args = get_args()
-        if args.vae_slicing:
-            self.vae.enable_slicing()
-        if args.vae_tiling:
-            self.vae.enable_tiling()
+        if args.distributed_vae:
+            pass
+        else:
+            self.vae = AutoencoderKLHunyuanVideo()
+            self.vae.requires_grad_(False)
+            
+            if args.vae_slicing:
+                self.vae.enable_slicing()
+            if args.vae_tiling:
+                self.vae.enable_tiling()
+            latent_channels = self.vae.config.latent_channels
 
         hunyuanConfig = HunyuanParams()
-        latent_channels = self.vae.config.latent_channels
 
         print("Load HunyuanVideoTransformer3DModel to cuda")
         self.config = config 
@@ -65,12 +68,21 @@ class HunyuanPipeline(nn.Module):
         
     def forward(self, batch_dict):
         args = get_args()
+        image_scale = 8
+        frame_scale = 4
         if self.pre_process:
             with torch.no_grad():
                 drop_prob = 0
                 # latents
-                images = batch_dict["images"]
-                batch_size, num_frames, _, height, width = images.shape
+                if args.distributed_vae:
+                    # print(batch_dict['latents'])
+                    batch_size, _,num_frames, height, width = batch_dict['latents'].shape
+                    num_frames = (num_frames-1)*frame_scale + 1
+                    height = height * image_scale
+                    width = width * image_scale
+                else:
+                    images = batch_dict["images"]
+                    batch_size, num_frames, _, height, width = images.shape
                 
                 timesteps = torch.tensor(0, device=torch.cuda.current_device()).long()
                 
@@ -98,7 +110,10 @@ class HunyuanPipeline(nn.Module):
                     else None
                 )
                 
-                latents = batch_dict["latents"]
+                if "latents" in batch_dict and batch_dict["latents"] is not None:
+                    latents = batch_dict["latents"]
+                else:
+                    latents = self.forward_vae(images) * self.vae.config.scaling_factor
 
                 noise = torch.randn(
                     latents.shape,

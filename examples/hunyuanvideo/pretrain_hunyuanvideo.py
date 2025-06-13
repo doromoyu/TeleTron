@@ -8,14 +8,13 @@ from megatron.core.enums import ModelType
 from megatron.training.arguments import core_transformer_config_from_args
 from megatron.core import mpu
 
-from megatron.training import get_args, get_timers, get_tokenizer, pretrain, print_rank_0,get_model
+from megatron.training import get_args, get_timers, get_tokenizer, print_rank_0,get_model
+from teletron.training.training import pretrain,initialize_megatron
 from megatron.legacy.data.data_samplers import build_pretraining_data_loader
-from megatron.training import pretrain
 from megatron.training.utils import (
     average_losses_across_data_parallel_group
 )
 import torch.distributed as dist
-from megatron.training.initialize import initialize_megatron
 from megatron.training.global_vars import (
     get_args,
     get_timers,
@@ -24,7 +23,9 @@ from teletron.datasets.fake_dataset import FakeDataset
 from teletron.models.hunyuanvideo.pipeline import HunyuanPipeline
 from teletron.training.utils import get_batch_on_this_tp_cp_rank_vast
 
-from teletron .datasets.build import build_dataset
+from teletron.datasets.build import build_dataset
+from teletron.models.hunyuanvideo.producer import producer_process
+from teletron.core.parallel_state import get_world_group
 import yaml
 
 class Config(dict):
@@ -73,6 +74,10 @@ def extra_args_provider(parser):
     
     group = parser.add_argument_group(title='debug')
     group.add_argument("--sanity-check", action="store_true")
+
+    group.add_argument("--distributed-vae-world-size", type=int, default=0,required=False)
+    group.add_argument("--tokenizer", type=str, required=False)
+    group.add_argument("--tokenizer-mode", type=str, default="llama")
     return parser
 
 
@@ -160,6 +165,7 @@ if __name__ == "__main__":
         model_provider,
         ModelType.encoder_or_decoder,
         forward_step,
+        producer_process=producer_process,
         extra_args_provider=extra_args_provider,
         args_defaults={'tokenizer_type': 'GPT2BPETokenizer'}
     )

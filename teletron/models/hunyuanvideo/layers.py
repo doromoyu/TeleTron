@@ -89,8 +89,8 @@ class HunyuanVideoIndividualTokenRefinerBlock(nn.Module):
         temb: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        torch.backends.cuda.enable_cudnn_sdp(False)
         norm_hidden_states = self.norm1(hidden_states)
-
         attn_output = self.attn(
             hidden_states=norm_hidden_states,
             encoder_hidden_states=None,

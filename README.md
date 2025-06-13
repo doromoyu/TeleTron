@@ -17,6 +17,10 @@ TeleTron
 |:---:|:---:|
 | <img src="assets/efficiency.png" width="400" alt="Training Efficiency"> | <img src="assets/efficiency_max_training_frames.png" width="400" alt="Max Training Frames"> |
 
+## 🔥News
+
+- **2025/6/13**: TeleTron supports distributed multimodal encoders for hunyuanvideo models!
+- **2025/5/16**: TeleTron first release with code for HunyuanVideo full-finetuning and inference!
 
 ## 📖Introduction
 
@@ -87,9 +91,6 @@ Run the script below respectively on 4 * 8 H800 nodes and 129-frame 720P trainin
 bash examples/hunyuanvideo/run_unified.sh 1 4 129
 ```
 
-## 🔥News
-
-- **2025/5/16**: TeleTron first release with code for HunyuanVideo full-finetuning and inference!
 
 ## ✨Features
 
@@ -97,6 +98,7 @@ bash examples/hunyuanvideo/run_unified.sh 1 4 129
 - [x] Tensor Parallel 
 - [x] AdaLayerNorm fused kernel
 - [x] RmsNorm fused kernel
+- [x] Distributed multimodal encoders
 - [ ] [Unified Sequence Parallel](https://arxiv.org/abs/2405.07719) 
 
 ## Acknowledgement
