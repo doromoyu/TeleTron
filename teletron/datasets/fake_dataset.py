@@ -1,11 +1,9 @@
 # Copyright (c) 2025 TeleAI-infra Team. All rights reserved.
 
-from typing import List
-from collections import defaultdict
 import torch
 import random
 import string
-from megatron.training import get_args
+from teletron.utils import get_args
 
 class FakeDataset():
     def __init__(
@@ -35,10 +33,9 @@ class FakeDataset():
             ``self.pipeline``.
         """
         random_data = {}
-        random_data["prompt"] = ''.join(random.choices(string.ascii_letters + string.digits, k=880))
+        random_data["struct_prompt"] = ''.join(random.choices(string.ascii_letters + string.digits, k=880))
+        random_data["short_prompt"] = ''.join(random.choices(string.ascii_letters + string.digits, k=880))
+        random_data["dense_prompt"] = ''.join(random.choices(string.ascii_letters + string.digits, k=880))
         random_data["images"] = torch.randn((self.dst_num_frames, 3, self.dst_size[1], self.dst_size[0]))
-        random_data["first_ref_image"] = torch.randn((1, 3, self.dst_size[1], self.dst_size[0]))
-        random_data["prompt_embeds"] = torch.randn(120, 4096) # assume text token length=120
-        random_data["clip_text_embed"] = torch.randn(768)
-        random_data["latents"] = torch.randn(16, int(self.dst_num_frames / 4) + 1, int(self.dst_size[1] / 8), int(self.dst_size[0] / 8)).to(torch.bfloat16)
+        random_data["raw_first_image"] = torch.randn(( 1, 3, self.dst_size[1], self.dst_size[0]))
         return random_data
