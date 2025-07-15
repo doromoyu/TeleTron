@@ -1,31 +1,33 @@
 # Copyright (c) 2025 TeleAI-infra Team and Nvidia Megatron-LM Team. All rights reserved.
 
-import math
 import time
+import math
 import random
+import contextlib
 import dataclasses
-from typing import Optional
-from datetime import timedelta, datetime
 import numpy as np
+from typing import Optional
+from datetime import timedelta
+
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-
 from megatron.core.jit import jit_fuser
 from megatron.core import mpu, tensor_parallel
 from megatron.core.transformer import TransformerConfig
 from megatron.core.tensor_parallel import param_is_not_tensor_parallel_duplicate
-from apex.multi_tensor_apply import multi_tensor_applier
 
 from teletron.train.config import load_config
 from teletron.utils import (get_args,
                             fused_kernel_load,
                             print_rank_0,
-                            print_rank_last,
-                            get_num_microbatches,
                             update_num_microbatches,
+                            get_attr_wrapped_model,
+                            get_model_config,
                             )
 from teletron.utils.config import get_current_global_batch_size
+
+from apex.multi_tensor_apply import multi_tensor_applier
 
 try:
     import amp_C
@@ -34,104 +36,6 @@ except ImportError:
 NUM_BYTES_IN_MEGABYTE = 1024 * 1024
 _TRANSFORMER_MODEL_GROUP = None
 
-
-def training_log(
-    loss_dict,
-    total_loss_dict,
-    learning_rate,
-    decoupled_learning_rate,
-    iteration,
-    loss_scale,
-    report_memory_flag,
-    skipped_iter,
-    grad_norm,
-    params_norm,
-    num_zeros_in_grad,
-):
-    """Log training information such as losses, timing, ...."""
-    args = get_args()
-
-    # Advanced, skipped, and Nan iterations.
-    advanced_iters_key = 'advanced iterations'
-    skipped_iters_key = 'skipped iterations'
-    nan_iters_key = 'nan iterations'
-    # Advanced iterations.
-    if not skipped_iter:
-        total_loss_dict[advanced_iters_key] = total_loss_dict.get(
-            advanced_iters_key, 0) + 1
-    else:
-        if advanced_iters_key not in total_loss_dict:
-            total_loss_dict[advanced_iters_key] = 0
-    # Skipped iterations.
-    total_loss_dict[skipped_iters_key] = total_loss_dict.get(
-        skipped_iters_key, 0) + skipped_iter
-    # Update losses and set nan iterations
-    got_nan = False
-    for key in loss_dict:
-        if not skipped_iter:
-            total_loss_dict[key] = total_loss_dict.get(
-                key, torch.tensor([0.0], dtype=torch.float, device='cuda')) + loss_dict[key]
-        else:
-            value = loss_dict[key].float().sum().item()
-            is_nan = value == float('inf') or \
-                     value == -float('inf') or \
-                     value != value
-            got_nan = got_nan or is_nan
-    total_loss_dict[nan_iters_key] = total_loss_dict.get(
-        nan_iters_key, 0) + int(got_nan)
-
-    # Calculate batch size.
-    batch_size = args.micro_batch_size * args.data_parallel_size * \
-        get_num_microbatches()
-
-    if iteration % args.log_interval == 0:
-        log_string = f" [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]"
-        log_string += ' iteration {:8d}/{:8d} |'.format(
-            iteration, args.train_iters)
-        log_string += ' consumed samples: {:12d} |'.format(
-            args.consumed_train_samples)
-        assert learning_rate is not None
-        # Decoupled_learning_rate should be not None only on first and last pipeline stage.
-        log_string += ' learning rate: {:.6E} |'.format(learning_rate)
-        if args.decoupled_lr is not None and (mpu.is_pipeline_first_stage(ignore_virtual=True) or
-                                              mpu.is_pipeline_last_stage(ignore_virtual=True)):
-            assert decoupled_learning_rate is not None
-            log_string += ' decoupled learning rate: {:.6E} |'.format(decoupled_learning_rate)
-        else:
-            assert decoupled_learning_rate is None
-        log_string += ' global batch size: {:5d} |'.format(batch_size)
-        for key in total_loss_dict:
-            if key not in [advanced_iters_key, skipped_iters_key,
-                           nan_iters_key]:
-                avg = total_loss_dict[key].item() / \
-                      float(max(1, total_loss_dict[advanced_iters_key]))
-                if avg > 0.0:
-                    log_string += ' {}: {:.6E} |'.format(key, avg)
-                total_loss_dict[key] = torch.tensor([0.0], dtype=torch.float, device='cuda')
-        log_string += ' loss scale: {:.1f} |'.format(loss_scale)
-        if grad_norm is not None:
-            log_string += ' grad norm: {:.3f} |'.format(grad_norm)
-        if num_zeros_in_grad is not None:
-            log_string += ' num zeros: {:.1f} |'.format(num_zeros_in_grad)
-        if params_norm is not None:
-            log_string += ' params norm: {:.3f} |'.format(params_norm)
-        log_string += ' number of skipped iterations: {:3d} |'.format(
-            total_loss_dict[skipped_iters_key])
-        log_string += ' number of nan iterations: {:3d} |'.format(
-            total_loss_dict[nan_iters_key])
-        total_loss_dict[advanced_iters_key] = 0
-        total_loss_dict[skipped_iters_key] = 0
-        total_loss_dict[nan_iters_key] = 0
-        print_rank_last(log_string)
-        if report_memory_flag and learning_rate > 0.:
-            # Report memory after optimizer state has been initialized.
-            if torch.distributed.get_rank() == 0:
-                num_microbatches = get_num_microbatches()
-                report_theoretical_memory(args, num_microbatches=num_microbatches, verbose=True)
-            report_memory('(after {} iterations)'.format(iteration))
-            report_memory_flag = False
-
-    return report_memory_flag
 
 def report_memory(name):
     """Simple GPU memory report."""
@@ -308,6 +212,23 @@ def report_theoretical_memory(args, num_microbatches=None, verbose=False):
         f"total={total_memory:.2f} MB\n"
     )
 
+def get_grad_norm(optimizer):
+    parameters = optimizer.get_parameters()
+    grads_for_norm = optimizer.get_main_grads_for_grad_norm()
+
+    if isinstance(parameters, torch.Tensor):
+        parameters = [parameters]
+    if isinstance(grads_for_norm, torch.Tensor):
+        grads_for_norm = [grads_for_norm]
+
+    total_norm = 0.0
+    for param in parameters:
+        if param.grad is not None:
+            assert param.grad.type() == 'torch.cuda.FloatTensor'
+            param_norm = param.grad.data.norm(2)  # L2 范数
+            total_norm += param_norm.item() ** 2
+    total_norm = total_norm ** 0.5
+    return total_norm
 
 def param_is_not_shared(param):
     return not hasattr(param, 'shared') or not param.shared
@@ -462,7 +383,11 @@ def loss_func(output_tensor):
     loss = output_tensor[0].mean()
     averaged_loss = average_losses_across_data_parallel_group([loss])
     loss = loss.unsqueeze(0)
-    return loss, {"loss": averaged_loss[0]}
+
+    loss_wo_w = output_tensor[1].mean()
+    averaged_loss_wo_w  = average_losses_across_data_parallel_group([loss_wo_w])
+    loss_wo_w = loss_wo_w.unsqueeze(0)
+    return loss, {"loss": averaged_loss[0], "loss_wo_w": averaged_loss_wo_w[0]}
 
 def forward_step(data_iterator, model):
     """Forward training step.
@@ -480,7 +405,173 @@ def forward_step(data_iterator, model):
 
     return output_tensor_list, loss_func
 
+def deepspeed_forward_backward(
+    forward_step_func,
+    data_iterator,
+    model,
+    num_microbatches,
+    seq_length,
+    micro_batch_size,
+    decoder_seq_length,
+    forward_only,
+    zero_optimizer,
+):
+    if isinstance(model, list):
+        model = model[0]
+    config = get_model_config(model)
+    if config.timers is not None:
+        config.timers('forward-backward', log_level=1).start(barrier=config.barrier_with_L1_time)
 
+    no_sync_func = config.no_sync_func
+    if no_sync_func is None:
+        no_sync_func = contextlib.nullcontext
+
+
+    forward_data_store = []
+    input_tensor, output_tensor_grad = None, None
+    with no_sync_func():
+        for i in range(num_microbatches - 1):
+            output_tensor = deepspeed_forward_step(
+                forward_step_func,
+                data_iterator,
+                model,
+                num_microbatches,
+                input_tensor,
+                forward_data_store,
+                config,
+                is_first_microbatch=(i == 0),
+            )
+            if not forward_only:
+                deepspeed_backward_step(zero_optimizer, input_tensor, output_tensor, output_tensor_grad, config)
+
+    # Run computation for last microbatch out of context handler (want to
+    # synchronize gradients).
+    output_tensor = deepspeed_forward_step(
+        forward_step_func,
+        data_iterator,
+        model,
+        num_microbatches,
+        input_tensor,
+        forward_data_store,
+        config,
+        is_first_microbatch=(num_microbatches == 1),
+    )
+
+    if not forward_only:
+        deepspeed_backward_step(zero_optimizer, input_tensor, output_tensor, output_tensor_grad, config)
+
+    if config.timers is not None:
+        config.timers('forward-backward').stop()
+
+    return forward_data_store
+
+def deepspeed_forward_step(
+    forward_step_func,
+    data_iterator,
+    model,
+    num_microbatches,
+    input_tensor,
+    forward_data_store,
+    config,
+    is_first_microbatch=False,
+):
+
+    """Forward step for passed-in model.
+
+    If first stage, input tensor is obtained from data_iterator, otherwise
+    passed-in input_tensor is used.
+
+    Returns output tensor."""
+    if config.timers is not None:
+        config.timers('forward-compute', log_level=2).start()
+
+    if is_first_microbatch and hasattr(model, 'set_is_first_microbatch'):
+        model.set_is_first_microbatch()
+
+    unwrap_output_tensor = False
+    if not isinstance(input_tensor, list):
+        input_tensor = [input_tensor]
+        unwrap_output_tensor = True
+
+    set_input_tensor = get_attr_wrapped_model(model, "set_input_tensor")
+    set_input_tensor(input_tensor)
+
+    if config.enable_autocast:
+        context_manager = torch.autocast("cuda", dtype=config.autocast_dtype)
+    else:
+        context_manager = contextlib.nullcontext()
+
+    with context_manager:
+        output_tensor, loss_func = forward_step_func(data_iterator, model)
+
+    output_tensor = loss_func(output_tensor)
+    loss, loss_reduced = output_tensor
+    output_tensor = loss / num_microbatches
+    forward_data_store.append(loss_reduced)
+
+    if config.timers is not None:
+        config.timers('forward-compute').stop()
+
+    if unwrap_output_tensor:
+        return output_tensor
+    return [output_tensor]
+
+
+def deepspeed_backward_step(zero_optimizer, input_tensor, output_tensor, output_tensor_grad, config):
+    """Backward step through passed-in output tensor.
+
+    If last stage, output_tensor_grad is None, otherwise gradient of loss
+    with respect to stage's output tensor.
+
+    Returns gradient of loss with respect to input tensor (None if first
+    stage)."""
+
+    # NOTE: This code currently can handle at most one skip connection. It
+    # needs to be modified slightly to support arbitrary numbers of skip
+    # connections.
+
+    if config.timers is not None:
+        config.timers('backward-compute', log_level=2).start()
+
+    # Retain the grad on the input_tensor.
+    unwrap_input_tensor_grad = False
+    if not isinstance(input_tensor, list):
+        input_tensor = [input_tensor]
+        unwrap_input_tensor_grad = True
+    for x in input_tensor:
+        if x is not None:
+            x.retain_grad()
+
+    if not isinstance(output_tensor, list):
+        output_tensor = [output_tensor]
+    if not isinstance(output_tensor_grad, list):
+        output_tensor_grad = [output_tensor_grad]
+
+    # Backward pass.
+    if output_tensor_grad[0] is None and config.grad_scale_func is not None:
+        output_tensor[0] = config.grad_scale_func(output_tensor[0])
+
+    zero_optimizer.backward(output_tensor[0], retain_graph=False)
+    zero_optimizer.overlapping_partition_gradients_reduce_epilogue()
+    # torch.autograd.backward(output_tensor[0], grad_tensors=output_tensor_grad[0])
+
+    # Collect the grad of the input_tensor.
+    input_tensor_grad = [None]
+    if input_tensor is not None:
+        input_tensor_grad = []
+        for x in input_tensor:
+            if x is None:
+                input_tensor_grad.append(None)
+            else:
+                input_tensor_grad.append(x.grad)
+
+    if unwrap_input_tensor_grad:
+        input_tensor_grad = input_tensor_grad[0]
+
+    if config.timers is not None:
+        config.timers('backward-compute').stop()
+
+    return input_tensor_grad
 
 
 def average_losses_across_data_parallel_group(losses):
@@ -720,99 +811,6 @@ def get_batch_on_this_tp_cp_rank_wan_dist(data_iterator):
                     group=mpu.get_tensor_context_parallel_group()
                 )
                 batch[key] = tensor 
-
-    return batch
-
-def get_batch_on_this_tp_cp_rank_wan(data_iterator):
-    pass
-
-
-def get_batch_on_this_tp_cp_rank_vast_dist(data_iterator):
-
-    def _broadcast(item):
-        if item is not None:
-           torch.distributed.broadcast(item, mpu.get_tensor_context_parallel_src_rank(), group=mpu.get_tensor_context_parallel_group())
-    
-    if mpu.get_tensor_context_parallel_rank() == 0:
-        if data_iterator is not None:
-           data = next(data_iterator)
-        else:
-           data = None
-
-        from teletron.core.parallel_state import get_comm_pair
-        comm_pair = get_comm_pair()
-        
-        sizes_info = torch.empty((15), device=torch.cuda.current_device(), dtype=torch.int32)
-        req = dist.irecv(sizes_info, comm_pair.producer, tag=0)
-        req.wait()
-
-        transformer_embedding_size = sizes_info[0]*sizes_info[1]*sizes_info[2]
-        clip_embedding_size = sizes_info[3]*sizes_info[4]
-        first_img_embedding_size = sizes_info[5]*sizes_info[6]*sizes_info[7]*sizes_info[8]*sizes_info[9]
-        video_embedding_size = sizes_info[10]*sizes_info[11]*sizes_info[12]*sizes_info[13]*sizes_info[14]
-
-        recv_tensor = torch.empty((transformer_embedding_size +clip_embedding_size +first_img_embedding_size + video_embedding_size ), device=torch.cuda.current_device(), dtype=torch.bfloat16)
-
-        intervals = [0, 
-                        transformer_embedding_size,
-                        transformer_embedding_size + clip_embedding_size,
-                        transformer_embedding_size + clip_embedding_size + first_img_embedding_size,
-                        transformer_embedding_size + clip_embedding_size + first_img_embedding_size + video_embedding_size
-                        ]
-        
-        req = dist.irecv(recv_tensor, comm_pair.producer, tag = 0)
-        req.wait()
-
-        tf_embed, clip_embed, img_embed,latents = unpack_tensors(recv_tensor, intervals)
-        
-        batch = {
-            'prompt_embeds': tf_embed.view(sizes_info[0],sizes_info[1],sizes_info[2]),
-            'clip_text_embed': clip_embed.view(sizes_info[3], sizes_info[4]),
-            'first_ref_image': img_embed.view(sizes_info[5],sizes_info[6],sizes_info[7],sizes_info[8],sizes_info[9]),
-            'latents': latents.view(sizes_info[10],sizes_info[11],sizes_info[12],sizes_info[13],sizes_info[14])
-        }
-        
-        print(f"consumer {dist.get_rank()} , latents: {batch['latents'].shape}, value: {batch['latents'][0,0,0,0,:5]}", flush=True)
-
-
-        # Step 2: 广播大小信息
-        sizes_info = {key: tensor.size() if tensor is not None else None for key, tensor in batch.items()}
-        sizes_info = torch.distributed.broadcast_object_list([sizes_info],mpu.get_tensor_context_parallel_src_rank(), group=mpu.get_tensor_context_parallel_group())
-
-        batch['first_ref_image'] = batch['first_ref_image'].contiguous()
-        batch['prompt_embeds'] = batch['prompt_embeds'].contiguous()
-        batch['clip_text_embed'] = batch['clip_text_embed'].contiguous()
-        batch['latents'] = batch['latents'].contiguous()
-        
-        _broadcast(batch['first_ref_image'])
-        _broadcast(batch['prompt_embeds'])
-        _broadcast(batch['clip_text_embed'])
-        _broadcast(batch['latents'])
-
-    else:
-        sizes_info = None 
-        sizes_info_list = [sizes_info]
-        torch.distributed.broadcast_object_list(sizes_info_list,mpu.get_tensor_context_parallel_src_rank(), group=mpu.get_tensor_context_parallel_group())
-
-        first_ref_image=torch.empty(sizes_info_list[0]['first_ref_image'], dtype=torch.bfloat16, device = torch.cuda.current_device())
-        prompt_embeds=torch.empty(sizes_info_list[0]['prompt_embeds'], dtype=torch.bfloat16, device = torch.cuda.current_device())
-        clip_text_embed=torch.empty(sizes_info_list[0]['clip_text_embed'], dtype=torch.bfloat16, device = torch.cuda.current_device())
-        if "latents" in sizes_info_list[0] and sizes_info_list[0]['latents'] is not None: 
-            latents=torch.empty(sizes_info_list[0]['latents'], dtype=torch.bfloat16, device = torch.cuda.current_device())
-        else:
-            latents = None
-
-        _broadcast(first_ref_image)
-        _broadcast(prompt_embeds)
-        _broadcast(clip_text_embed)
-        _broadcast(latents)
-
-        batch = {
-            'first_ref_image': first_ref_image,
-            'prompt_embeds': prompt_embeds,
-            'clip_text_embed': clip_text_embed,
-            'latents':latents
-        }
 
     return batch
 
@@ -1428,6 +1426,10 @@ def _add_logging_args(parser):
                        help='If set, write timers to tensorboard.')
     group.add_argument('--log-batch-size-to-tensorboard', action='store_true',
                        help='If set, write batch-size to tensorboard.')
+    group.add_argument('--no-log-gradient-norm-to-tensorboard',
+                       action='store_false',
+                       help='Disable gradient norm logging to tensorboard.',
+                       dest='log_gradient_norm_to_tensorboard')
     group.add_argument('--no-log-learnig-rate-to-tensorboard',
                        action='store_false',
                        help='Disable learning rate logging to tensorboard.',
@@ -1931,6 +1933,8 @@ def _add_distributed_args(parser):
                        'affects the encoder embedding.)')
     group.add_argument('--use-distributed-optimizer', action='store_true',
                        help='Use distributed optimizer.')
+    group.add_argument('--use-zero2', action='store_true',
+                       help='Use DeepSpeed Zero2 distributed optimizer.')
     group.add_argument('--context-parallel-size', type=int, default=1,
                        help='Degree of context parallelism.')
     group.add_argument('--nccl-communicator-config-path', type=str, default=None,

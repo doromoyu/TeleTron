@@ -2,11 +2,16 @@ import torch
 import torch.distributed as dist
 from megatron.core import mpu
 
-from teletron.models.wan.flow_match import FlowMatchScheduler
+from teletron.models.flow_match import FlowMatchScheduler
 from teletron.train import Trainer, parse_args
-from teletron.train.utils import get_batch, loss_func
+from teletron.train.utils import average_losses_across_data_parallel_group
 
-
+def loss_func(output_tensor):
+    """Loss function."""
+    loss = output_tensor[0].mean()
+    averaged_loss = average_losses_across_data_parallel_group([loss])
+    loss = loss.unsqueeze(0)
+    return loss, {"loss": averaged_loss[0]}
 
 def extra_args(parser):
     group = parser.add_argument_group(title='customized args')

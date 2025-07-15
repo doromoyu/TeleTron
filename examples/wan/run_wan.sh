@@ -10,26 +10,52 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 ENCODER_MODEL_PATH=<Specify path>
 ENCODER_TOKENIZER_PATH=<Specify path to file>/google/umt5-xxl
-GPUS_PER_NODE=$(echo $CUDA_VISIBLE_DEVICES | awk -F"," '{print NF}')
-echo '$GPUS_PER_NODE' $MASTER_ADDR $GPUS_PER_NODE
 
-# Change for multinode config
-MASTER_ADDR=${MASTER_ADDR:-'127.0.0.1'}
-echo '$MASTER_ADDR'$MASTER_ADDR
-MASTER_PORT='11220'
-NNODES=${WORLD_SIZE:-'1'}
-
-echo '$NNODES' $NNODES
-NODE_RANK=${RANK:-'0'}
-echo '$NODE_RANK' $NODE_RANK
-WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
-echo '$WORLD_SIZE' $WORLD_SIZE
 
 TP=1
 CP=2
 MBS=1
+
+N_MOE=1
+N_LAYERS=20
+N_GPU_FOR_TRAIN=4
+N_GPU_FOR_DATA=1
+
+# Change for multinode config
+MASTER_ADDR=${MASTER_ADDR:-'127.0.0.1'}
+MASTER_PORT='11220'
+NNODES=${WORLD_SIZE:-'1'}
+NODE_RANK=${RANK:-'0'}
+
+
+N_GPU=$((N_GPU_FOR_TRAIN+N_GPU_FOR_DATA))
+WORLD_SIZE=$N_GPU_FOR_TRAIN
 GBS=$(($WORLD_SIZE*$MBS/$CP/$TP))
-# GBS=8
+GPUS_PER_NODE=$(echo $CUDA_VISIBLE_DEVICES | awk -F"," '{print NF}')
+
+if [ $N_MOE -eq 1 ]; then
+    MOE_ARGS=(
+        --moe-step-factor-list 0.0 
+        --moe-step-factor-list 1.0 
+    )
+elif [ $N_MOE -eq 2 ]; then
+    MOE_ARGS=(
+        --moe-step-factor-list 0.0 
+        --moe-step-factor-list 0.833 
+        --moe-step-factor-list 1.0
+    )
+elif [ $N_MOE -eq 4 ]; then
+    MOE_ARGS=(
+        --moe-step-factor-list 0.0 
+        --moe-step-factor-list 0.625 
+        --moe-step-factor-list 0.833
+        --moe-step-factor-list 0.937 
+        --moe-step-factor-list 1.0
+    )
+else
+    echo "N_MOE must be 1, 2 or 4"
+    exit 1
+fi
 
 DISTRIBUTED_ARGS=(
     --nproc_per_node $GPUS_PER_NODE 
@@ -40,7 +66,7 @@ DISTRIBUTED_ARGS=(
 )
 
 GPT_MODEL_ARGS=(
-    --num-layers 20
+    --num-layers $N_LAYERS
     --hidden-size 5120        
     --num-attention-heads 40
     --seq-length 512          
@@ -74,9 +100,10 @@ MODEL_PARALLEL_ARGS=(
     --tensor-model-parallel-size ${TP}
     --context-parallel-size ${CP}
     --distributed-vae
-    --distributed-vae-world-size 1
-    --consumer-models-num 1
+    --distributed-vae-world-size $N_GPU_FOR_DATA
+    --consumer-models-num $N_MOE
 )
+
 DATA_ARGS=(
     --dataset-type FakeDataset
     --split 949,50,1
@@ -87,7 +114,7 @@ DATA_ARGS=(
 
 EVAL_AND_LOGGING_ARGS=(
     --encoder-model-path ${ENCODER_MODEL_PATH}
-    --encoder-tokenizer-path ${ENCODER_TOKENIZER-PATH}
+    --encoder-tokenizer-path ${ENCODER_TOKENIZER_PATH}
     --tensorboard-queue-size 10
     --log-interval 1
     --save-interval 10000
@@ -100,7 +127,8 @@ torchrun ${DISTRIBUTED_ARGS[@]} examples/wan/pretrain_wan.py \
     ${GPT_MODEL_ARGS[@]} \
     ${TRAINING_ARGS[@]} \
     ${MODEL_PARALLEL_ARGS[@]} \
+    ${MOE_ARGS[@]} \
     ${DATA_ARGS[@]}    \
     ${EVAL_AND_LOGGING_ARGS[@]} \
     ${LORA_CFG[@]} \
-    "$@" 2>&1 | tee wan.log
+    "$@" | tee wan.log

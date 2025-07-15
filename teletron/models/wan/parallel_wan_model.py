@@ -16,15 +16,24 @@ class ContextParallelWanDitBlock(ContextParallelMixin, DiTBlock):
         self.enable_context_parallel(self.self_attn.attn)
 
     def forward(self, x, context, t_mod, freqs):
-        # msa: multi-head self-attention  mlp: multi-layer perceptron
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-            self.modulation.to(dtype=t_mod.dtype, device=t_mod.device) + t_mod).chunk(6, dim=1)
-        input_x = self.modulate_with_cp_grad_reduce(self.norm1(x), shift_msa, scale_msa)
-        attn_output = self.self_attn(input_x, freqs)
-        x = self.gate_with_cp_grad_reduce(x, gate_msa, attn_output)
-        x = x + self.cross_attn(self.norm3(x), context)
-        input_x = self.modulate_with_cp_grad_reduce(self.norm2(x), shift_mlp, scale_mlp)
-        x = self.gate_with_cp_grad_reduce(x, gate_mlp, self.ffn(input_x))
+        modulation = self.modulation.to(dtype=t_mod.dtype, device=t_mod.device)
+        modulation = modulation + t_mod
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = modulation.chunk(6, dim=1)
+
+        normed_x1 = self.norm1(x)
+        modulated_x1 = self.modulate_with_cp_grad_reduce(normed_x1, shift_msa, scale_msa)
+        attn_output = self.self_attn(modulated_x1, freqs)
+        gated_x1 = self.gate_with_cp_grad_reduce(x, gate_msa, attn_output)
+
+        normed_x3 = self.norm3(gated_x1)
+        cross_attn_output = self.cross_attn(normed_x3, context)
+        x = gated_x1 + cross_attn_output
+
+        normed_x2 = self.norm2(x)
+        modulated_x2 = self.modulate_with_cp_grad_reduce(normed_x2, shift_mlp, scale_mlp)
+        ffn_output = self.ffn(modulated_x2)
+        x = self.gate_with_cp_grad_reduce(x, gate_mlp, ffn_output)
+
         return x
 
 
@@ -64,14 +73,16 @@ class ParallelWanModel(ContextParallelMixin, TransformerGeneralMixin, WanModel):
 
             param.register_hook(self.cp_grad_reduce)
 
-    def forward(self,
-                x: torch.Tensor,
-                timestep: torch.Tensor,
-                context: torch.Tensor,
-                clip_feature: Optional[torch.Tensor] = None,
-                y: Optional[torch.Tensor] = None,
-                cn_images=None, 
-                **kwargs,):
+    def forward(
+        self,
+        x: torch.Tensor,
+        timestep: torch.Tensor,
+        context: torch.Tensor,
+        clip_feature: Optional[torch.Tensor] = None,
+        y: Optional[torch.Tensor] = None,
+        cn_images=None, 
+        **kwargs,
+    ):
         # Do whatever necessary before forward transformer blocks
         t = self.time_embedding(
             sinusoidal_embedding_1d(self.freq_dim, timestep))

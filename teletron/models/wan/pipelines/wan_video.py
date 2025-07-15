@@ -17,7 +17,7 @@ from teletron.models.wan.encoder import (
     WanImageEncoder,
     WanPrompter,
 )
-from teletron.models.wan.flow_match import FlowMatchScheduler
+from teletron.models.flow_match import FlowMatchScheduler
 from teletron.models.wan.wan_model import WanModel, sinusoidal_embedding_1d
 
 

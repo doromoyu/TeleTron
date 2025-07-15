@@ -13,11 +13,6 @@
 # limitations under the License.
 
 def exe_adaptation():
-    import megatron.core.distributed
-    from teletron.core.distributed.distributed_data_parallel import DistributedDataParallel
-    from teletron.core.distributed.param_and_grad_buffer import ParamAndGradBuffer
-    megatron.core.distributed.DistributedDataParallel = DistributedDataParallel
-    megatron.core.distributed.param_and_grad_buffer.ParamAndGradBuffer = ParamAndGradBuffer
 
     import megatron.core
     from teletron.core.parallel_state import initialize_model_parallel_decorators
@@ -37,5 +32,6 @@ def exe_adaptation():
     megatron.core.parallel_state.get_tensor_context_parallel_world_size = get_tensor_context_parallel_world_size
     megatron.core.parallel_state.get_tensor_context_parallel_src_rank = get_tensor_context_parallel_src_rank
     megatron.core.mpu = megatron.core.parallel_state
+
 
 exe_adaptation()

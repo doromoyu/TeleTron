@@ -4,7 +4,7 @@ import os
 import torch
 from typing import Dict, Any, Tuple, List
 
-from teletron.models.encoder_registry import register_encoder, BaseEncoder
+from teletron.core.distributed.base_encoder import BaseEncoder
 from .wan_prompter import WanPrompter
 from .model_manager import ModelManager
 from .wan_encoder_utils import get_encoder_features
@@ -19,7 +19,6 @@ def get_encoder_model_paths(path):
     ]
     return [os.path.join(path, f) for f in filenames]
 
-@register_encoder("wan_encoder")
 class WanVideoEncoder(BaseEncoder):
     """WAN视频模型的具体编码器实现。"""
     

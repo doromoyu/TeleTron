@@ -3,7 +3,11 @@
 _GLOBAL_ARGS=None
 _GLOBAL_NUM_MICROBATCHES_CALCULATOR = None
 _GLOBAL_TOKENIZER = None
+_GLOBAL_WANDB_WRITER = None
+_GLOBAL_TENSORBOARD_WRITER = None
+_GLOBAL_TIMERS = None
 
+from megatron.core import Timers
 from teletron.utils.microbatches import build_num_microbatches_calculator
 from teletron.utils.tokenizer import build_tokenizer
 
@@ -15,6 +19,8 @@ def set_args(args, build_tokenizer=True):
     _GLOBAL_ARGS = args
     if build_tokenizer:
         _ = _build_tokenizer(args)
+    _set_timers(args)
+    _set_tensorboard_writer(args)
 
 def _build_tokenizer(args):
     """Initialize tokenizer."""
@@ -22,6 +28,46 @@ def _build_tokenizer(args):
     _ensure_var_is_not_initialized(_GLOBAL_TOKENIZER, 'tokenizer')
     _GLOBAL_TOKENIZER = build_tokenizer(args)
     return _GLOBAL_TOKENIZER
+
+def get_timers():
+    """Return timers."""
+    _ensure_var_is_initialized(_GLOBAL_TIMERS, 'timers')
+    return _GLOBAL_TIMERS
+
+def get_tensorboard_writer():
+    """Return tensorboard writer. It can be None so no need
+    to check if it is initialized."""
+    return _GLOBAL_TENSORBOARD_WRITER
+
+def get_wandb_writer():
+    """Return tensorboard writer. It can be None so no need
+    to check if it is initialized."""
+    return _GLOBAL_WANDB_WRITER
+
+def _set_timers(args):
+    """Initialize timers."""
+    global _GLOBAL_TIMERS
+    _ensure_var_is_not_initialized(_GLOBAL_TIMERS, 'timers')
+    _GLOBAL_TIMERS = Timers(args.timing_log_level, args.timing_log_option)
+
+def _set_tensorboard_writer(args):
+    """Set tensorboard writer."""
+    global _GLOBAL_TENSORBOARD_WRITER
+    _ensure_var_is_not_initialized(_GLOBAL_TENSORBOARD_WRITER,
+                                   'tensorboard writer')
+
+    if hasattr(args, 'tensorboard_dir') and \
+       args.tensorboard_dir and args.rank == (args.world_size - 1):
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+            print('> setting tensorboard ...')
+            _GLOBAL_TENSORBOARD_WRITER = SummaryWriter(
+                log_dir=args.tensorboard_dir,
+                max_queue=args.tensorboard_queue_size)
+        except ModuleNotFoundError:
+            print('WARNING: TensorBoard writing requested but is not '
+                  'available (are you using PyTorch 1.1.0 or later?), '
+                  'no TensorBoard logs will be written.', flush=True)
 
 def _build_num_microbatches_calculator(args):
 

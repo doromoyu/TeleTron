@@ -1,19 +1,10 @@
-import pytest 
 import os 
 import torch
-import torch.nn.functional as F
-from typing import Tuple, Optional, Callable
 from unittest import TestCase
 from unittest.mock import patch, Mock
-# import torch.multiprocessing as mp 
-from multiprocessing import Process
-import multiprocessing as mp 
-import argparse
-from unit_test.test_utils import spawn
+from unit_tests.test_utils import spawn
 import logging
-# import teletron
 
-# Configure logging
 logging.basicConfig(level=logging.DEBUG,
 format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -41,7 +32,7 @@ def parallel_wan_model_testing(rank, world_size, q, mock_teletron):
     args.num_attention_heads = 40
     args.distributed_vae = False
     mock_teletron.return_value = args
-
+    args.consumer_models_num = 1
 
     cp_size = world_size
     torch.distributed.init_process_group(world_size=world_size, rank=rank)

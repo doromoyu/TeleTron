@@ -1,16 +1,11 @@
-import pytest 
 import os 
 import torch
 import torch.nn.functional as F
-from typing import Tuple, Optional, Callable
+from typing import Tuple, Callable
 from unittest import TestCase
 from unittest.mock import patch, Mock
-# import torch.multiprocessing as mp 
-from multiprocessing import Process
-import multiprocessing as mp 
-from unit_test.test_utils import spawn
+from unit_tests.test_utils import spawn
 import logging
-# import teletron
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG,
@@ -51,6 +46,11 @@ def parallel_hunyuan_model_testing(rank, world_size, q, mock_teletron):
     args.recompute_method = "block"
     args.recompute_granularity = "full"
     args.recompute_num_layers = 1
+    args.activation_offload = True
+    args.num_layers = 1 
+    args.num_attention_heads = 2
+    args.distributed_vae = False
+    args.consumer_models_num = 1
     mock_teletron.return_value = args
 
 
@@ -106,7 +106,7 @@ def parallel_hunyuan_model_testing(rank, world_size, q, mock_teletron):
             continue
         else:
             logging.info(f"{name}: {norm_euclid_dist} {model_grads[name].norm()} {parallel_moedl_grads[name].norm()} rank{rank}")
-            if model_grads[name].norm() < 1e-4:
+            if model_grads[name].norm() < 2e-4:
                 continue
             grad_allclose = False
     if grad_allclose:

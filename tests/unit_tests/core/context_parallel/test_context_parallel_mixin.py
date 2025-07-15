@@ -4,8 +4,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 from unittest.mock import patch, Mock
-# from teletron.core import initialize_model_parallel
-from unit_test.test_utils import spawn
+from unit_tests.test_utils import spawn
 import logging
 
 SPLIT_SUCCESS = "split input success rank"
@@ -89,8 +88,16 @@ def setupContextParallelMixin(cp_rank, cp_size, q, mock_teletron):
     from teletron.core.context_parallel import ContextParallelMixin
     from teletron.core.parallel_state import initialize_model_parallel_base
     args = Mock()
-    args.num_attention_heads = 16
+    args.recompute_method = "block"
+    args.recompute_granularity = "full"
+    args.recompute_num_layers = 1
+    args.activation_offload = True
+    args.num_layers = 1 
+    args.num_attention_heads = 4
+    args.distributed_vae = False
+    args.consumer_models_num = 1
     mock_teletron.return_value = args
+    
     class ContextParallelModel(ContextParallelMixin):
         def __init__(self, split_dim=1, gather_dim=1):
             self.cp_size = mpu.get_context_parallel_world_size()

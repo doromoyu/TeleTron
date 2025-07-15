@@ -1,23 +1,21 @@
 # Copyright (c) 2025 TeleAI-infra Team and Nvidia Megatron-LM Team. All rights reserved.
 
-import sys
-import time
-import gc
-
 import torch
 import torch.distributed as dist
 import dataclasses
-
+import time
+import sys
+import gc
+import os
 from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.transformer.module import Float16Module
 from megatron.core.enums import ModelType
 from megatron.core.distributed import finalize_model_grads
 from megatron.core import mpu, tensor_parallel
-from megatron.core.distributed import DistributedDataParallel as DDP
-from megatron.core.optimizer import (
-    OptimizerConfig,
-)
+from megatron.core.optimizer import  OptimizerConfig
+import deepspeed
 
+from teletron.core.distributed import DistributedDataParallel as DDP
 from teletron.utils import (
     print_rank_0,
     print_datetime,
@@ -37,23 +35,24 @@ from teletron.train.utils import (
     set_jit_fusion_options,
     core_transformer_config_from_args,
     forward_step,
+    deepspeed_forward_backward,
     _set_random_seed,
     _initialize_tp_communicators,
-    training_log,
     calc_params_l2_norm,
+    get_grad_norm
 )
 from teletron.core.parallel_state import get_transformer_model_group
 from teletron.train.dataloader import DataloaderMixin
 from teletron.models.build import build_model
 from teletron.train.checkpoint import CheckPointMixin, unwrap_model
 from teletron.train.lr_scheduler import SchedulerMixin
+from teletron.train.telelogger import TeleLoggerMixin
 from teletron.datasets.build import build_train_valid_test_datasets
 from teletron.core.distributed.distributed_encoder import producer_process
 from teletron.models.encoder_registry import get_encoder_name
 from teletron.train.consumer_dataloader import create_batch_loader
 
 from logging import getLogger
-
 logger = getLogger(__name__)
 _TRAIN_START_TIME = time.time()
 ALL_MODULE_WRAPPER_CLASSNAMES = (DDP, Float16Module)
@@ -64,7 +63,7 @@ def cyclic_iter(iter):
         for x in iter:
             yield x
 
-class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
+class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin, TeleLoggerMixin):
     def __init__(
         self,
         args,
@@ -116,7 +115,10 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
 
         args = get_args()
         assert args.global_batch_size == args.micro_batch_size * mpu.get_data_parallel_world_size()
-        model = self.get_model(model_type)
+        if args.use_zero2:
+            model = self.get_model(model_type, wrap_with_ddp=False)
+        else:
+            model = self.get_model(model_type)
         unwrapped_model = unwrap_model(model)
         kwargs = {}
         for f in dataclasses.fields(OptimizerConfig):
@@ -124,7 +126,12 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
                 kwargs[f.name] = getattr(args, f.name)
         config = OptimizerConfig(**kwargs)
         config.timers = None
-        optimizer = self.get_optimizer(config, model, no_wd_decay_cond,
+        if args.use_zero2:
+            deepspeed.init_distributed()
+            optimizer = self.get_optimizer_for_zero2(config, model, no_wd_decay_cond,
+                                        scale_lr_cond, lr_mult)
+        else:
+            optimizer = self.get_optimizer(config, model, no_wd_decay_cond,
                                         scale_lr_cond, lr_mult)
 
         opt_param_scheduler = self.get_optimizer_param_scheduler(optimizer)
@@ -267,13 +274,15 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
             train_ds, valid_ds, test_ds = build_train_valid_test_datasets()
             train_itrt, valid_itrt, test_itrt \
                 = self.build_train_valid_test_data_iterators(
-                    train_valid_test_dataset_provider, train_ds_prev=train_ds)
+                    train_valid_test_dataset_provider, 
+                    train_ds_prev=train_ds,
+                    valid_ds_prev=valid_ds)
         return train_itrt, valid_itrt, test_itrt
 
 
 
     def build_train_valid_test_data_iterators(
-        self, is_tp_first=None, dp_rank=None, dp_size=None, train_ds_prev=None, return_ds=False
+        self, is_tp_first=None, dp_rank=None, dp_size=None, train_ds_prev=None, valid_ds_prev=None, return_ds=False
     ):
         """Build pretraining data iterators."""
 
@@ -283,13 +292,13 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
         print("Building loaders.")
         
         if return_ds is True:
-            train_dataloader, valid_dataloader, test_dataloader,train_ds = \
+            train_dataloader, valid_dataloader, test_dataloader, train_ds, valid_ds = \
                 self.build_train_valid_test_data_loaders(
-                    is_tp_first,dp_rank,dp_size, train_ds_prev, return_ds=return_ds)
+                    is_tp_first,dp_rank,dp_size, train_ds_prev, valid_ds_prev, return_ds=return_ds)
         else:
             train_dataloader, valid_dataloader, test_dataloader = \
                 self.build_train_valid_test_data_loaders(
-                    is_tp_first,dp_rank,dp_size, train_ds_prev)
+                    is_tp_first,dp_rank,dp_size, train_ds_prev, valid_ds_prev)
 
         # Build iterators.
         print("Building iterators.")
@@ -325,7 +334,7 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
             test_data_iterator = None
 
         if return_ds is True:
-            return train_data_iterator, valid_data_iterator, test_data_iterator, train_ds
+            return train_data_iterator, valid_data_iterator, test_data_iterator, train_ds, valid_ds
         else:
             return train_data_iterator, valid_data_iterator, test_data_iterator
 
@@ -462,7 +471,7 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
         num_floating_point_operations_so_far = args.num_floating_point_operations_so_far
 
         # Setup some training config params
-        config.grad_scale_func = self.optimizer.scale_loss
+        # config.grad_scale_func = self.optimizer.scale_loss
         if isinstance(model[0], DDP) and args.overlap_grad_reduce:
             assert config.no_sync_func is None, \
                 ('When overlap_grad_reduce is True, config.no_sync_func must be None; '
@@ -519,7 +528,7 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
             update_num_microbatches(args.consumed_train_samples, consistency_check=True)
 
             args.curr_iteration = iteration
-            import os
+            
             if os.environ.get("MEMORY_SNAPSHOT"):
                 torch.cuda.memory._record_memory_history(max_entries=80000)
             loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = \
@@ -529,6 +538,10 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
                         optimizer,
                         opt_param_scheduler,
                         config)
+            
+            if grad_norm is None and not args.use_zero2:
+                grad_norm = get_grad_norm(optimizer)
+                
             if os.environ.get("MEMORY_SNAPSHOT"):
                 time_str = time.strftime("%Y%m%d_%H%M%S", time.localtime())
                 save_dir = os.environ.get("PROF_SAVE_PATH", ".")  # 默认当前目录
@@ -543,7 +556,10 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
             num_floating_point_operations_so_far += num_floating_point_operations(args, batch_size)
 
             # Logging.
-            loss_scale = optimizer.get_loss_scale().item()
+            if args.use_zero2:
+                loss_scale = optimizer._get_loss_scale()
+            else:
+                loss_scale = optimizer.get_loss_scale().item()
             params_norm = None
             if args.log_params_norm:
                 params_norm = calc_params_l2_norm(model)
@@ -555,12 +571,15 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
                     decoupled_learning_rate = param_group['lr']
                 else:
                     learning_rate = param_group['lr']
-            report_memory_flag = training_log(loss_dict, total_loss_dict,
-                                            learning_rate,
-                                            decoupled_learning_rate,
-                                            iteration, loss_scale,
-                                            report_memory_flag, skipped_iter,
-                                            grad_norm, params_norm, num_zeros_in_grad)
+
+            report_memory_flag = self.log_training_infos(
+                loss_dict, total_loss_dict,
+                learning_rate,
+                decoupled_learning_rate,
+                iteration, loss_scale,
+                report_memory_flag, skipped_iter,
+                grad_norm, params_norm, num_zeros_in_grad
+            )
 
             # Evaluation
             if args.eval_interval and iteration % args.eval_interval == 0 and \
@@ -651,23 +670,33 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
         """Single training step."""
         args = get_args()
 
-        # Set grad to zero.
-        for model_chunk in model:
-            model_chunk.zero_grad_buffer()
+        if not args.use_zero2:
+            for model_chunk in model:
+                model_chunk.zero_grad_buffer()
         optimizer.zero_grad()
 
-        # Forward pass.
-        forward_backward_func = get_forward_backward_func()
-
-        losses_reduced = forward_backward_func(
-            forward_step_func=forward_step_func,
-            data_iterator=data_iterator,
-            model=model,
-            num_microbatches=get_num_microbatches(),
-            seq_length=args.seq_length,
-            micro_batch_size=args.micro_batch_size,
-            decoder_seq_length=args.decoder_seq_length,
-            forward_only=False)
+        if args.use_zero2:
+            losses_reduced = deepspeed_forward_backward(
+                forward_step_func=forward_step_func,
+                data_iterator=data_iterator,
+                model=model,
+                num_microbatches=get_num_microbatches(),
+                seq_length=args.seq_length,
+                micro_batch_size=args.micro_batch_size,
+                decoder_seq_length=args.decoder_seq_length,
+                forward_only=False,
+                zero_optimizer=optimizer)
+        else:
+            forward_backward_func = get_forward_backward_func()
+            losses_reduced = forward_backward_func(
+                forward_step_func=forward_step_func,
+                data_iterator=data_iterator,
+                model=model,
+                num_microbatches=get_num_microbatches(),
+                seq_length=args.seq_length,
+                micro_batch_size=args.micro_batch_size,
+                decoder_seq_length=args.decoder_seq_length,
+                forward_only=False)
 
         # Empty unused memory.
         if args.empty_unused_memory_level >= 1:
@@ -679,7 +708,13 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
             unwrapped_model.cancel_gradients_last_layer(args.curr_iteration)
 
         # Update parameters.
-        update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+        if args.use_zero2:
+            optimizer.step()
+            update_successful = True
+            grad_norm = None
+            num_zeros_in_grad = None
+        else:
+            update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
 
         # Vision momentum.
         if getattr(args, 'vision_pretraining', False) and args.vision_pretraining_type == "dino":
@@ -741,6 +776,8 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin):
         print_rank_last('-' * length)
         print_rank_last(string)
         print_rank_last('-' * length)
+
+        self.log_validation_infos(total_loss_dict, iteration)
 
     def evaluate(
         self,

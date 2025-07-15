@@ -1,8 +1,8 @@
 # Copyright (c) 2025 TeleAI-infra Team and Nvidia Megatron-LM Team. All rights reserved.
 
 import random
-import torch
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 from megatron.core import mpu
 
@@ -15,7 +15,7 @@ from teletron.datasets.build import build_train_valid_test_datasets
 class DataloaderMixin:
 
     def build_train_valid_test_data_loaders(self,
-        is_tp_first=None, dp_rank=None, dp_size=None, train_ds_prev=None, return_ds=False
+        is_tp_first=None, dp_rank=None, dp_size=None, train_ds_prev=None, valid_ds_prev=None, return_ds=False
     ):
         args = get_args()
 
@@ -38,7 +38,7 @@ class DataloaderMixin:
                 
         if train_ds_prev is not None:
             train_ds = train_ds_prev
-            valid_ds = None
+            valid_ds = valid_ds_prev
             test_ds = None
         else:
             train_ds, valid_ds, test_ds = build_train_valid_test_datasets()
@@ -73,7 +73,7 @@ class DataloaderMixin:
         args.do_test = getattr(args, "do_test", False) or flags[2].item()
 
         if return_ds is True:
-            return train_dataloader, valid_dataloader, test_dataloader, train_ds
+            return train_dataloader, valid_dataloader, test_dataloader, train_ds, valid_ds
         else:
             return train_dataloader, valid_dataloader, test_dataloader
 

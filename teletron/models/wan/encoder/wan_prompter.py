@@ -100,11 +100,10 @@ class WanPrompter(BasePrompter):
 
     def encode_prompt(self, prompt, positive=True, device="cuda"):
         prompt = self.process_prompt(prompt, positive=positive)
-        self.text_encoder.to(torch.cuda.current_device())
-        
+        # self.text_encoder.to(device)
         ids, mask = self.tokenizer(prompt, return_mask=True, add_special_tokens=True)
-        ids = ids.to(torch.cuda.current_device())
-        mask = mask.to(torch.cuda.current_device())
+        ids = ids.to(device)
+        mask = mask.to(device)
         seq_lens = mask.gt(0).sum(dim=1).long()
         prompt_emb = self.text_encoder(ids, mask)
         for i, v in enumerate(seq_lens):

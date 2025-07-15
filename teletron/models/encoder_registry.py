@@ -1,76 +1,13 @@
 # Copyright (c) 2025 TeleAI-infra Team. All rights reserved.
 
 import torch
-from abc import ABC, abstractmethod
-from typing import Dict, Type, Any, Tuple, List
-from teletron.utils import get_args
+from typing import Dict, Any, Type
+from teletron.core.distributed.base_encoder import BaseEncoder
+from teletron.models.wan.encoder.wan_encoder import WanVideoEncoder
 
-class BaseEncoder(ABC):
-
-    def __init__(self, device: torch.device, **kwargs: Any):
-        
-        args = get_args()
-        self.device = device
-        self.moe = (args.consumer_models_num > 1)
-
-    @abstractmethod
-    def setup(self, **kwargs: Any) -> None:
-        """
-        init models
-        """
-        pass
-
-    @abstractmethod
-    def encode(self, raw_batch: Dict[str, Any]) -> Tuple[List[torch.Tensor], torch.Tensor]:
-        """
-
-        Args:
-            raw_batch (Dict[str, Any])
-
-        Returns:
-            Tuple[List[torch.Tensor], torch.Tensor]: 
-            - Tensor List (List[torch.Tensor])
-            - Sizes of Tensors (torch.Tensor)
-        """
-        pass
-
-    @staticmethod
-    @abstractmethod
-    def get_output_schema() -> List[str]:
-        """
-        返回一个有序列表，其中包含编码器输出的所有张量的名称。
-        这个顺序必须与 encode() 方法返回的张量列表的顺序严格一致。
-        这是一个静态方法，因此无需实例化即可调用。
-
-        返回:
-            List[str]: 一个包含张量名称的字符串列表，例如 ['context', 'clip,'image_feature', 'latents']。
-        """
-        pass
-
-    @staticmethod
-    def _pack_tensors(tensors_to_pack: List[torch.Tensor]) -> torch.Tensor:
-        """
-        将一个张量列表展平并拼接成一个单一的扁平化张量。
-        这是一个辅助函数，可以在具体实现中被调用。
-        """
-        if not tensors_to_pack:
-            return torch.tensor([])
-        
-        flattened_tensors = [torch.flatten(t) for t in tensors_to_pack]
-        return torch.cat(flattened_tensors, dim=0)
-
-    @staticmethod
-    def _get_tensors_size(tensor_list: List[torch.Tensor], device: torch.device) -> torch.Tensor:
-        """
-        获取张量列表的形状信息，并将其作为一个整数张量返回。
-        这是一个辅助函数，可以在具体实现中被调用。
-        """
-        size_info = ()
-        for item in tensor_list:
-            size_info += item.size()
-        return torch.tensor(size_info, dtype=torch.int32, device=device)
 
 _ENCODER_REGISTRY: Dict[str, Type[BaseEncoder]] = {}
+_ENCODER_REGISTRY["wan_encoder"] = WanVideoEncoder
 
 def register_encoder(name: str):
     """
@@ -112,7 +49,7 @@ def get_encoder(name: str, device: torch.device, **kwargs: Any) -> BaseEncoder:
 
 model_mapping = {
     "parallelwanmodel": "wan_encoder",
-    "wanmodel": "wan_encoder"
+    "wanmodel": "wan_encoder",
 }
 
 def get_encoder_name(key):

@@ -1,4 +1,4 @@
-# Copyright (c) 2025 TeleAI-infra Team and Nvidia Megatron-LM Team. All rights reserved.
+# Copyright (c) 2025 TeleAI-infra Team, DeepSpeed Team and Nvidia Megatron-LM Team. All rights reserved.
 
 import math
 from typing import Callable, List, Optional
@@ -13,8 +13,13 @@ from megatron.core.optimizer import (
     ChainedOptimizer,
 )
 from megatron.core.transformer.module import MegatronModule
+from apex.optimizers import FusedAdam as Adam
+from apex.optimizers import FusedSGD as SGD
+from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
+from deepspeed.utils.timer import NoopTimer
 
-from teletron.utils import print_rank_0, get_args
+
+from teletron.utils import print_rank_0, get_args, get_num_microbatches
 from teletron.train.utils import update_train_iters
 
 from logging import getLogger
@@ -342,6 +347,78 @@ class SchedulerMixin:
             override_opt_param_scheduler=args.override_opt_param_scheduler)
 
         return opt_param_scheduler
+
+    def get_optimizer_for_zero2(self, config: OptimizerConfig, 
+                        model: List[MegatronModule], 
+                        no_weight_decay_cond: Optional[Callable] = None, 
+                        scale_lr_cond: Optional[Callable] = None, 
+                        lr_mult: float = 1.0,):
+        args = get_args()
+        # Collect param groups.
+        param_groups = _get_param_groups(
+            model,
+            no_weight_decay_cond,
+            scale_lr_cond,
+            lr_mult,
+            use_decoupled_learning_rate=config.decoupled_lr is not None,
+        )
+        param_groups = _update_min_and_max_lr_in_param_groups(
+            param_groups,
+            lr=config.lr,
+            min_lr=config.min_lr,
+            decoupled_lr=config.decoupled_lr,
+            decoupled_min_lr=config.decoupled_min_lr,
+        )
+        if config.optimizer == 'adam':
+            base_optimizer = Adam(
+                param_groups,
+                lr=config.lr,
+                weight_decay=config.weight_decay,
+                betas=(config.adam_beta1, config.adam_beta2),
+                eps=config.adam_eps,
+            )
+        elif config.optimizer == 'sgd':
+            base_optimizer = SGD(
+                param_groups,
+                lr=config.lr,
+                weight_decay=config.weight_decay,
+                momentum=config.sgd_momentum,
+            )
+        else:
+            raise Exception('{} optimizer is not supported.'.format(config.optimizer))
+        param_names = {param:name for name, param in model[0].named_parameters()}
+        timers = NoopTimer()
+        optimizer = DeepSpeedZeroOptimizer(
+                base_optimizer,
+                param_names,
+                timers=timers,
+                static_loss_scale=1.0,
+                dynamic_loss_scale=False,
+                dynamic_loss_args=None,
+                clip_grad=args.clip_grad,
+                contiguous_gradients=True,
+                reduce_bucket_size=500000000,
+                use_multi_rank_bucket_allreduce=True,
+                allgather_bucket_size=500000000,
+                dp_process_group=mpu.get_data_parallel_group(with_context_parallel=True),
+                expert_parallel_group=None,
+                expert_data_parallel_group=None,
+                reduce_scatter=True,
+                overlap_comm=False,
+                offload_optimizer_config=None,
+                mpu=None,
+                postscale_gradients=True,
+                gradient_predivide_factor=1.0,
+                gradient_accumulation_steps=get_num_microbatches(),
+                ignore_unused_parameters=True,
+                partition_grads=True,
+                round_robin_gradients=False,
+                has_moe_layers=False,
+                fp16_master_weights_and_gradients=False,
+                gradient_accumulation_dtype=torch.bfloat16,
+                communication_data_type=torch.bfloat16,
+                elastic_checkpoint=False,)
+        return optimizer
 
     def get_optimizer(self, config: OptimizerConfig, 
                         model: List[MegatronModule], 

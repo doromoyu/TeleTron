@@ -1,14 +1,9 @@
 from unittest import TestCase
 import os 
 import torch
-from teletron.core.context_parallel import ContextParallelModelManager
-from teletron.core.parallel_state  import initialize_model_parallel_base
-from unit_test.test_utils import spawn
+from unit_tests.test_utils import spawn
 import logging
-
-# Configure logging
-# logging.basicConfig(level=logging.DEBUG,
-# format='%(asctime)s - %(levelname)s - %(message)s')
+from unittest.mock import patch, Mock
 
 SPLIT_SUCCESS = "split input success rank"
 SPLIT_FAIL = "split input fail rank"
@@ -31,8 +26,21 @@ def split_input(cp_manager, cp_size, cp_rank, q):
         global SPLIT_FAIL
         q.put(f"{SPLIT_FAIL}{cp_rank}")
 
-def setupContextParallelModelManager(cp_rank, cp_size, q):
-
+@patch("teletron.utils.get_args")
+def setupContextParallelModelManager(cp_rank, cp_size, q, mock_teletron):
+    from teletron.core.context_parallel import ContextParallelModelManager
+    from teletron.core.parallel_state  import initialize_model_parallel_base    
+    args = Mock()
+    args.recompute_method = "block"
+    args.recompute_granularity = "full"
+    args.recompute_num_layers = 1
+    args.activation_offload = True
+    args.num_layers = 1 
+    args.num_attention_heads = 4
+    args.distributed_vae = False
+    args.consumer_models_num = 1
+    mock_teletron.return_value = args
+    
     torch.distributed.init_process_group(world_size=cp_size, rank=cp_rank)
     initialize_model_parallel_base(
             tensor_model_parallel_size = 1,

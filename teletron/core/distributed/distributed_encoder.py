@@ -60,7 +60,8 @@ def producer_process(
     encoder_name:str,
     device,
     build_train_valid_test_data_iterators: Callable,
-    train_ds: Any = None
+    train_ds: Any = None,
+    valid_ds: Any = None, # TODO
 ):
     """
     通用的分布式数据生产者进程。
@@ -91,9 +92,15 @@ def producer_process(
     data_iterators = {}
     same_data_group = {}
     train_ds0 = train_ds
+    valid_ds0 = valid_ds
     for idx, mcp in merged_comm_pairs.items():
-        data_iterators[idx], _, _,  train_ds0= build_train_valid_test_data_iterators(
-            is_tp_first=True, dp_rank=mcp.dp_rank, dp_size=mcp.dp_size, train_ds_prev=train_ds0, return_ds=True
+        data_iterators[idx], _, _,  train_ds0, valid_ds0 = build_train_valid_test_data_iterators(
+            is_tp_first=True, 
+            dp_rank=mcp.dp_rank, 
+            dp_size=mcp.dp_size, 
+            train_ds_prev=train_ds0, 
+            valid_ds_prev=valid_ds0, 
+            return_ds=True
         )
         first_consumer = mcp.consumer[0]
         same_data_group[first_consumer] = mcp.consumer

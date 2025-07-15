@@ -87,7 +87,8 @@ class Bucket:
         self.use_distributed_optimizer = use_distributed_optimizer
         self.gradient_scaling_factor = gradient_scaling_factor
         self.check_for_nan_in_grad = check_for_nan_in_grad
-
+        self.grad_reduce_buffer_size = 100 * 1024 * 1024
+        self.grad_reduce_buffer = torch.empty(self.grad_reduce_buffer_size, dtype=torch.float32).cuda()
         self.reset()
 
     def reset(self):
@@ -125,15 +126,26 @@ class Bucket:
         self.grad_data *= self.gradient_scaling_factor
         # Use async_op only when overlap_grad_reduce is True.
         if self.use_distributed_optimizer:
-            local_data_view = shard_buffer(self.grad_data, self.data_parallel_world_size)[
-                self.data_parallel_rank
-            ]
-            self.communication_handle = torch.distributed._reduce_scatter_base(
-                local_data_view,
-                self.grad_data,
-                group=self.data_parallel_group,
-                async_op=self.overlap_grad_reduce,
-            )
+            num_reduces = self.grad_data.numel() // self.grad_reduce_buffer_size
+            numel_reduced = 0
+            
+            for i in range(num_reduces):
+                grad_to_reduce = self.grad_data.narrow(0, i * self.grad_reduce_buffer_size, self.grad_reduce_buffer_size)
+                self.grad_reduce_buffer.copy_(grad_to_reduce.float())
+                torch.distributed.all_reduce(
+                    self.grad_reduce_buffer, group=self.data_parallel_group
+                )
+                grad_to_reduce.copy_(self.grad_reduce_buffer.bfloat16())
+                numel_reduced += self.grad_reduce_buffer_size
+            if numel_reduced < self.grad_data.numel():
+                last_reduce_size = self.grad_data.numel() - numel_reduced
+                last_grad_to_reduce = self.grad_data.narrow(0, numel_reduced, last_reduce_size)
+                last_grad_reduce_buffer = self.grad_reduce_buffer.narrow(0, 0, last_reduce_size)
+                last_grad_reduce_buffer.copy_(last_grad_to_reduce.float())
+                torch.distributed.all_reduce(
+                    last_grad_reduce_buffer, group=self.data_parallel_group
+                )
+                last_grad_to_reduce.copy_(last_grad_reduce_buffer.bfloat16())
         else:
             self.communication_handle = torch.distributed.all_reduce(
                 self.grad_data, group=self.data_parallel_group, async_op=self.overlap_grad_reduce

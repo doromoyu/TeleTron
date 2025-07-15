@@ -2,12 +2,12 @@
 
 from .registry import Registry
 from .wan.parallel_wan_model import ParallelWanModel
-
+from .hunyuan.parallel_model import ParallelHunyuanVideoModel
 
 
 registor = Registry("model")
 registor.register(ParallelWanModel)
-
+registor.register(ParallelHunyuanVideoModel)
 
 def build_model(name,config=None):
     if config is None:

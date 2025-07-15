@@ -12,7 +12,12 @@ from .mappings import split_forward_gather_backward, gather_forward_split_backwa
 from .layers import GateWithGradReduce, ModulateWithCPGradReduce
 from teletron.utils import get_args
 
-
+try:
+    import flash_attn_interface
+    FLASH_ATTN_3_AVAILABLE = True
+except ModuleNotFoundError:
+    FLASH_ATTN_3_AVAILABLE = False
+    
 class ContextParallelMixin:
 
     @staticmethod
@@ -99,12 +104,15 @@ class ContextParallelMixin:
             [q,k,v]
         )
 
-        q = q.transpose(1, 2).contiguous()
-        k = k.transpose(1, 2).contiguous()
-        v = v.transpose(1, 2).contiguous()
-        # qkv: b n/CP s d
+        if FLASH_ATTN_3_AVAILABLE:
+            x = flash_attn_interface.flash_attn_func(q, k, v)[0]
+            x = x.transpose(1, 2).contiguous()
+        else:
+            q = q.transpose(1, 2).contiguous()
+            k = k.transpose(1, 2).contiguous()
+            v = v.transpose(1, 2).contiguous()
+            x = F.scaled_dot_product_attention(q, k, v)
 
-        x = F.scaled_dot_product_attention(q, k, v)
         x = self.pad_for_context_parallel(x, 2)
         x = SeqAllToAll4D.apply(
             cp_group, x, 2, 1

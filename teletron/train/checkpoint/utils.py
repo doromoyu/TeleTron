@@ -5,12 +5,10 @@ import sys
 import torch
 import random 
 import numpy as np 
-
+from teletron.utils import print_rank_0, get_args
 from megatron.core import mpu, tensor_parallel, dist_checkpointing
 from megatron.core.dist_checkpointing.mapping import ShardedObject
 
-from .aux_func import print_rank_0
-from .config import get_args
 
 def get_rng_state(use_dist_ckpt: bool = False):
     """ collect rng state across data parallel ranks """
@@ -50,7 +48,9 @@ def get_checkpoint_name(checkpoints_path, iteration, release=False,
                         pipeline_parallel=None,
                         tensor_rank=None, pipeline_rank=None,
                         expert_parallel=None, expert_rank=None,
-                        return_base_dir=False):
+                        return_base_dir=False,
+                        use_zero2=False,
+                        ):
     """Determine the directory name for this rank's checkpoint."""
     if release:
         directory = 'release'
@@ -85,6 +85,15 @@ def get_checkpoint_name(checkpoints_path, iteration, release=False,
     if expert_parallel:
         common_path = common_path + f'_{expert_rank:03d}'
 
+    if use_zero2:
+        optimizer_checkpoint_names = []
+        dp_size = mpu.get_data_parallel_world_size()
+        cp_size = mpu.get_context_parallel_world_size()
+        for dp in range(dp_size):
+            for cp in range(cp_size):
+                optimizer_checkpoint_names.append(os.path.join(common_path, f"zero2_optim_dp{dp}_cp{cp}.pt"))
+        return optimizer_checkpoint_names
+
     return os.path.join(common_path, "model_optim_rng.pt")
 
 
@@ -109,7 +118,6 @@ def _load_base_checkpoint(load_dir, rank0=False, sharded_state_dict=None,
 
     If rank0 is true, just loads rank 0 checkpoint, ignoring arguments.
     """
-    #import ipdb; ipdb.set_trace()
     # Read the tracker file and set the iteration.
     tracker_filename = get_checkpoint_tracker_filename(load_dir)
 
@@ -168,9 +176,7 @@ def _load_base_checkpoint(load_dir, rank0=False, sharded_state_dict=None,
         state_dict = dist_checkpointing.load(sharded_state_dict, checkpoint_name)
         return state_dict, checkpoint_name, release
     try:
-        #import ipdb; ipdb.set_trace()
         state_dict = torch.load(checkpoint_name, map_location='cpu', weights_only=False)
-        #import ipdb; ipdb.set_trace()
     except ModuleNotFoundError:
         # from megatron.legacy.fp16_deprecated import loss_scaler
         # For backward compatibility.
@@ -181,7 +187,6 @@ def _load_base_checkpoint(load_dir, rank0=False, sharded_state_dict=None,
         sys.modules['megatron.fp16.loss_scaler'] = sys.modules[
             'megatron.legacy.fp16_deprecated.loss_scaler']
         sys.modules['megatron.model'] = sys.modules['megatron.legacy.model']
-        #import ipdb; ipdb.set_trace()
         state_dict = torch.load(checkpoint_name, map_location='cpu', weights_only=False)
         sys.modules.pop('fp16.loss_scaler', None)
         sys.modules.pop('megatron.fp16.loss_scaler', None)
@@ -361,3 +366,16 @@ def fix_query_key_value_ordering(model, checkpoint_version):
                 param.data.copy_(fixed_param)
         print_rank_0(" succesfully fixed query-key-values ordering for"
                      " checkpoint version {}".format(checkpoint_version))
+
+
+def get_model_path(model_name_or_path):
+    model_name_or_path = os.path.expandvars(model_name_or_path)
+    if model_name_or_path is None or os.path.exists(model_name_or_path):
+        return model_name_or_path
+    if os.path.isabs(model_name_or_path):
+        raise ValueError(f"{model_name_or_path} does not exist")
+    model_dir = get_model_dir()
+    model_path = os.path.join(model_dir, model_name_or_path)
+    if os.path.exists(model_path):
+        return model_path
+    return get_huggingface_model_path(model_name_or_path)
