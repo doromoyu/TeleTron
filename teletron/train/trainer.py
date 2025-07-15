@@ -44,7 +44,7 @@ from teletron.train.utils import (
 from teletron.core.parallel_state import get_transformer_model_group
 from teletron.train.dataloader import DataloaderMixin
 from teletron.models.build import build_model
-from teletron.train.checkpoint import CheckPointMixin, unwrap_model
+from teletron.train.checkpoint import CheckPointMixin, unwrap_model, ensure_directory_exists
 from teletron.train.lr_scheduler import SchedulerMixin
 from teletron.train.telelogger import TeleLoggerMixin
 from teletron.datasets.build import build_train_valid_test_datasets
@@ -505,8 +505,25 @@ class Trainer(CheckPointMixin, SchedulerMixin, DataloaderMixin, TeleLoggerMixin)
         num_microbatches = get_num_microbatches()
         eval_duration = 0.0
         eval_iterations = 0
+        
+        if args.consumer_profile:
+            prof_save_path = os.path.join(args.profile_path, f"consumer/rank_{dist.get_rank()}.json")
+            ensure_directory_exists(prof_save_path)
+            def trace_handler(p):
+                p.export_chrome_trace(prof_save_path)
+
+            prof = torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                with_stack=True,
+                on_trace_ready=trace_handler,
+                record_shapes=True
+            )
 
         while iteration < args.train_iters:
+            if args.consumer_profile and iteration == args.profile_step_start:
+                prof.start()
+            if args.consumer_profile and iteration == args.profile_step_end:
+                prof.stop()
             if args.profile and \
             iteration == args.profile_step_start and \
             torch.distributed.get_rank() in args.profile_ranks:

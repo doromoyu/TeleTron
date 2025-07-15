@@ -40,7 +40,7 @@ class WanVideoEncoder(BaseEncoder):
         kwargs['model_paths'] = get_encoder_model_paths(args.encoder_model_path)
         kwargs['tokenizer_path'] = args.encoder_tokenizer_path
         kwargs['tiler_kwargs'] = {
-            "tiled": True, 
+            "tiled": False, 
             "tile_size":  (34, 34), 
             "tile_stride": (18, 16)
         }
@@ -66,7 +66,7 @@ class WanVideoEncoder(BaseEncoder):
         
         pipe = WanVideoPipeline.from_model_manager(model_manager)
         
-        self.text_encoder = pipe.text_encoder.to(device=self.device)
+        self.text_encoder = pipe.text_encoder.to(device=self.device, dtype=torch.bfloat16)
         self.image_encoder = pipe.image_encoder.to(device=self.device)
         self.vae = pipe.vae.to(device=self.device, dtype=torch.bfloat16)
         del pipe # 释放不再需要的内存
