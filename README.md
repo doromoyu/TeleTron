@@ -20,7 +20,7 @@ TeleTron
 ^ Experiments conducted on HunyuanVideo model training using the first released version (2025/05/16).
 
 ## 🔥News
-- **2025/06/30**: TeleTron supports Wan-2.1 i2v training!
+- **2025/07/15**: TeleTron supports Wan-2.1 i2v training!
 - **2025/06/13**: TeleTron accelerates HunyuanVideo training by 30%+ by Distributed Multi-Modal Encoders!
 - **2025/05/16**: TeleTron first release with code for HunyuanVideo full-parameter training and inference! [[Zhihu]](https://zhuanlan.zhihu.com/p/1907030055512671098) [[WeChat]](https://mp.weixin.qq.com/s/Ie1NulNlUmzqSCRCFAXy7Q)
 
