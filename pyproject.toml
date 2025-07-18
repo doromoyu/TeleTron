@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "teletron"
+version = "0.1.0"
+description = "To pioneer training long-context multi-modal transformer models"
+readme = {file = "README.md", content-type = "text/markdown"}
+authors = [{name = "TeleAI-Infra Team"}]
+license = {text = "Apache-2.0"}
+requires-python = ">=3.8"
+keywords = ["transformer", "multimodal", "long-context", "machine learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Information Technology",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+dynamic = ["dependencies"]
+
+[project.urls]
+Homepage = "https://github.com/Tele-AI/TeleTron.git"
+Repository = "https://github.com/Tele-AI/TeleTron.git"
+Issues = "https://github.com/Tele-AI/TeleTron/issues"
+
+[tool.setuptools]
+packages = {find = {include = ["teletron*"]}}
+include-package-data = true
+zip-safe = false
+
+[tool.setuptools.package-data]
+teletron = ["**/*.yml", "**/*.sh"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.uv]
+link-mode = "copy" 
+index-url = "http://pypi.chinatelecom.ai/simple/"

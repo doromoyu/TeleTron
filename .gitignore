@@ -1,7 +1,9 @@
+*.pickle
 __pycache__
 *.so
 build
 .coverage_*
+*.egg
 *.egg-info
 *~
 slurm*
@@ -11,14 +13,8 @@ ckpt
 ckpt*
 *.log
 *.pyc
-*.pt
 __pycache__/*
-tests/*
-*.pickle
 *.png
-*.json
-events.out*
-*.pkl
-*.txt
-*.egg-info/*
-*.egg
+debug/
+.venv
+checkpoint/*

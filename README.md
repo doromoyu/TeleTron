@@ -20,7 +20,7 @@ TeleTron
 ^ Experiments conducted on HunyuanVideo model training using the first released version (2025/05/16).
 
 ## 🔥News
-
+- **2025/07/15**: TeleTron supports Wan-2.1 i2v training!
 - **2025/06/13**: TeleTron accelerates HunyuanVideo training by 30%+ by Distributed Multi-Modal Encoders!
 - **2025/05/16**: TeleTron first release with code for HunyuanVideo full-parameter training and inference! [[Zhihu]](https://zhuanlan.zhihu.com/p/1907030055512671098) [[WeChat]](https://mp.weixin.qq.com/s/Ie1NulNlUmzqSCRCFAXy7Q)
 
@@ -58,7 +58,7 @@ In the docker container, follow the script below to setup TeleTron.
 
 ```
 # get TeleTron
-git clone git@github.com:Tele-AI/TeleTron.git --recurse-submodule
+git clone git@github.com:Tele-AI/TeleTron.git
 
 # install requirements
 pip install -r requirements.txt
@@ -67,30 +67,13 @@ pip install -r requirements.txt
 cd teletron_op && bash install.sh && cd -
 ```
 
-### Sanity Check
-
-The script below will run a tiny version of HunyuanVideo with fake data. It serves as a sanity check for that the environment is correctly set up.
-
-```
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 MASTER_PORT=12345 bash examples/hunyuanvideo/run_unified_sanity_check.sh 1 1
-```
-
 ### Training
 
 * single node training
 
+Run the script below and Wan i2v training will be started (5 GPUs required).
 ```
-bash examples/hunyuanvideo/run_unified.sh 2 2 9
-```
-
-Note that the numbers "2 2 9" above denotes TP size, CP size, and number of frames respectively.  The default video resolution is 720P, and you may also alter training video resolution by adding `--video-resolution {width} {height}`  to the training arguments in the shell script `run_unified.sh`. 
-
-* Multi-node training
-
-Run the script below respectively on 4 * 8 H800 nodes and 129-frame 720P training will be initiated. Note that for full finetuning you still need to [download](https://huggingface.co/tencent/HunyuanVideo/tree/main) and [convert](./teletron/convert_ckpt/hunyuan/convert_ckpt.md) HunyuanVideo pretrained weights.
-
-```
-bash examples/hunyuanvideo/run_unified.sh 1 4 129
+bash examples/wan/run_wan.sh
 ```
 
 
