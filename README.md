@@ -17,7 +17,7 @@ TeleTron
 ![graph](ComparativeGraph.jpg)
 
 
-^ Experiments conducted on HunyuanVideo model training using the updated version (2025/07/29).
+^ Experiments conducted on Wan2.1 model training using the latest version of TeleTron (2025/07/29).
 
 ## 🔥News
 - **2025/07/15**: TeleTron supports Wan-2.1 i2v training!
